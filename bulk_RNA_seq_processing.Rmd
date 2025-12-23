@@ -570,7 +570,7 @@ write_csv(merged_df, "sector_genes_and_z_scores.csv")
 
 
 ### PLOT TRANSCRIPTS PER CELL TYPE USING HPA DATA ---
-# File path
+# File path; available at https://www.proteinatlas.org/humanproteome/single+cell/single+cell+type/data#datasets
 tsv_file <- "rna_single_nuclei_cluster_type.tsv"
 
 # Explicit gene order (top → bottom)
