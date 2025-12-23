@@ -1,0 +1,796 @@
+```{r}
+library(Rsubread)
+```
+
+```{r}
+reads1 <- list.files(path = "/Users/admin/Documents/Andrew/MF bulk RNA seq/", pattern = "R1_001.fastq.gz$", full.names = TRUE)
+reads2 <- list.files(path = "/Users/admin/Documents/Andrew/MF bulk RNA seq/", pattern = "R2_001.fastq.gz$", full.names = TRUE)
+```
+
+```{r}
+# Align based on hg38 files (available online)
+align(index = "hg38_index", 
+      readfile1 = reads1, 
+      readfile2 = reads2,
+      type = "rna",
+      output_format = "BAM", 
+      nthreads = 8)
+```
+
+```{r}
+trimmed_dir <- "/Users/admin/Documents/Andrew/MF bulk RNA seq/"
+bam.files <- list.files(trimmed_dir, pattern = "BAM$")
+bam.files
+```
+
+```{r}
+fc <- featureCounts(bam.files, annot.inbuilt = "hg38", isPairedEnd = TRUE)
+```
+
+```{r}
+saveRDS(fc, "2025.12.11_fc.RDS")
+```
+
+
+```{r}
+fc <- readRDS("2025.12.11_fc.RDS")
+```
+
+```{r}
+library(DESeq2)
+library(EnhancedVolcano)
+library(ggplot2)
+```
+
+```{r}
+count_matrix <- fc$counts
+```
+
+```{r}
+sample_names <- c("14238-MF-0001_S1_L005_R1_001.fastq.gz.subread.BAM",
+                  "14238-MF-0002_S1_L005_R1_001.fastq.gz.subread.BAM",
+                  "14238-MF-0003_S1_L005_R1_001.fastq.gz.subread.BAM",
+                  "14238-MF-0004_S1_L005_R1_001.fastq.gz.subread.BAM",
+                  "14238-MF-0005_S1_L005_R1_001.fastq.gz.subread.BAM",
+                  "14238-MF-0006_S1_L005_R1_001.fastq.gz.subread.BAM"
+                  )
+
+# Assign metadata
+protocol <- factor(c('P301L,V337M DOX','P301L,V337M DOX','P301L,V337M DOX','P301L,V337M', 'P301L,V337M','P301L,V337M'))
+
+# Create metadata dataframe
+coldata <- data.frame(
+  row.names = sample_names,
+  protocol = protocol
+)
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = fc$counts,
+                              colData = coldata,
+                              design = ~ protocol)
+dds <- DESeq(dds)
+```
+
+```{r}
+library(org.Hs.eg.db)
+```
+
+
+```{r}
+# Map gene symbols
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = rownames(dds),
+  column = "SYMBOL",
+  keytype = "ENTREZID",
+  multiVals = "first"
+)
+
+# Attach gene symbols to the DESeqDataSet object
+mcols(dds)$symbol <- gene_symbols
+```
+
+
+```{r}
+### ---- SETUP ----
+library(DESeq2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(EnhancedVolcano)
+library(dplyr)
+library(ragg)
+```
+
+```{r}
+### RUN DEG, GO, GSEA
+dir.create("DE_results", showWarnings = FALSE)
+dir.create("GO_results", showWarnings = FALSE)
+
+### ---- DEFINE CONTRAST ----
+g1 <- "P301L,V337M DOX"
+g2 <- "P301L,V337M"
+contrast_name <- paste0(g1, "_vs_", g2)
+message("=== Contrasting: ", contrast_name, " ===")
+
+### ---- GENE SYMBOL MAP ----
+entrez_ids <- rownames(dds)
+gene_symbols <- mapIds(
+  org.Hs.eg.db,
+  keys = entrez_ids,
+  keytype = "ENTREZID",
+  column = "SYMBOL",
+  multiVals = "first"
+)
+
+### ---- DE ANALYSIS ----
+res <- results(dds, contrast = c("protocol", g1, g2))
+res <- lfcShrink(dds, contrast = c("protocol", g1, g2),
+                 res = res, type = "ashr")
+
+res_df <- as.data.frame(res)
+res_df$symbol <- ifelse(
+  is.na(gene_symbols[rownames(res_df)]),
+  rownames(res_df),
+  gene_symbols[rownames(res_df)]
+)
+
+clean <- res_df %>%
+  filter(is.finite(log2FoldChange), is.finite(padj), !is.na(padj))
+
+write.csv(clean,
+          file = file.path("DE_results",
+                           paste0(contrast_name, "_DEGs.csv")),
+          row.names = TRUE)
+
+### ---- UP/DOWN SPLITS ----
+up_genes   <- rownames(clean)[clean$padj < 0.05 & clean$log2FoldChange > 0.1]
+down_genes <- rownames(clean)[clean$padj < 0.05 & clean$log2FoldChange < -0.1]
+universe <- rownames(clean)
+
+### ---- GO FUNCTION (FULL + SIMPLIFIED) ----
+run_GO <- function(genes, direction) {
+  if (length(genes) < 5) {
+    message("Too few ", direction, " genes for GO (", length(genes), ") — skipping")
+    return(NULL)
+  }
+  
+  # Full GO enrichment
+  ego <- enrichGO(
+    gene     = genes,
+    universe = universe,
+    OrgDb    = org.Hs.eg.db,
+    keyType  = "ENTREZID",
+    ont      = "BP",
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 0.1,
+    readable = TRUE
+  )
+  
+  # Save full results
+  write.csv(as.data.frame(ego),
+            file = file.path("GO_results",
+                             paste0(contrast_name, "_GO_", direction, "_BP.csv")),
+            row.names = FALSE)
+  
+  # Simplify GO
+  ego_simpl <- clusterProfiler::simplify(
+    ego,
+    cutoff = 0.5,
+    by = "p.adjust",
+    select_fun = min
+  )
+  
+  # Save simplified results
+  write.csv(as.data.frame(ego_simpl),
+            file = file.path("GO_results",
+                             paste0(contrast_name, "_GO_", direction, "_BP_simplified.csv")),
+            row.names = FALSE)
+  
+  return(list(full = ego, simplified = ego_simpl))
+}
+
+### ---- RUN GO ----
+ego_up <- run_GO(up_genes, "UP")
+ego_down <- run_GO(down_genes, "DOWN")
+)
+```
+```{r}
+## Load libraries
+library(readr)
+library(dplyr)
+library(stringr)
+
+## Read in files
+go_down <- read_csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_DOWN_BP.csv")
+go_up   <- read_csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_UP_BP.csv")
+degs    <- read_csv("DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv")
+
+## Extract gene lists from FIRST ROW ONLY
+down_genes <- str_split(go_down$geneID[1], "/", simplify = TRUE)
+up_genes   <- str_split(go_up$geneID[1], "/", simplify = TRUE)
+
+## Extract pathway descriptions from FIRST ROW ONLY
+down_desc <- go_down$Description[1]
+up_desc   <- go_up$Description[1]
+
+## Create clean column names
+down_colname <- paste0(down_desc, "_DOWN_pathway")
+up_colname   <- paste0(up_desc, "_UP_pathway")
+
+## Optional: make column names syntactically valid
+down_colname <- make.names(down_colname)
+up_colname   <- make.names(up_colname)
+
+## Add pathway membership columns to DEG dataframe
+degs <- degs %>%
+  mutate(
+    !!down_colname := symbol %in% down_genes,
+    !!up_colname   := symbol %in% up_genes
+  )
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+## Identify pathway columns dynamically
+pathway_cols <- grep("_pathway$", colnames(degs), value = TRUE)
+up_col   <- pathway_cols[grepl("_UP_", pathway_cols)]
+down_col <- pathway_cols[grepl("_DOWN_", pathway_cols)]
+
+## Create plotting category
+degs_plot <- degs %>%
+  mutate(
+    pathway_status = case_when(
+      !!sym(up_col)   ~ "UP pathway",
+      !!sym(down_col) ~ "DOWN pathway",
+      TRUE            ~ "Other"
+    )
+  )
+
+## Select top 9 UP and DOWN genes by adjusted p-value
+top_genes <- degs_plot %>%
+  filter(!is.na(padj)) %>%
+  mutate(direction = if_else(log2FoldChange > 0, "UP", "DOWN")) %>%
+  group_by(direction) %>%
+  slice_min(order_by = padj, n = 9, with_ties = FALSE) %>%
+  ungroup()
+
+## Volcano plot
+volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
+  ## Fold change cutoff lines
+  geom_vline(
+    xintercept = c(-0.1, 0.1),
+    linetype = "dashed",
+    color = "black",
+    linewidth = 0.4
+  ) +
+
+  ## Background points
+  geom_point(
+    data = filter(degs_plot, pathway_status == "Other"),
+    color = "grey70",
+    alpha = 0.5,
+    size = 1.5
+  ) +
+
+  ## DOWN pathway points
+  geom_point(
+    data = filter(degs_plot, pathway_status == "DOWN pathway"),
+    color = "blue",
+    alpha = 0.5,
+    size = 2
+  ) +
+
+  ## UP pathway points
+  geom_point(
+    data = filter(degs_plot, pathway_status == "UP pathway"),
+    color = "red",
+    alpha = 0.5,
+    size = 2
+  ) +
+
+  ## Labels: top 9 UP + top 9 DOWN
+  geom_text_repel(
+    data = top_genes,
+    aes(label = symbol),
+    size = 3,
+    vjust = 0.5,
+    hjust = 0.5
+  ) + 
+  scale_y_continuous(
+  limits = c(0, NA),
+  oob = scales::oob_keep
+) +
+
+  theme_classic(base_size = 14) +
+  labs(
+    x = "log2 Fold Change",
+    y = "-log10 adjusted p-value"
+  )
+ggsave("VolcanoPlot_Publication.png", plot = volcano_plot, width = 6, height = 5, dpi = 300)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Read GO UP file
+go_up <- read.csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_UP_BP_simplified.csv")
+
+# Select top 10 hits by p.adjust
+top10_go_up <- go_up %>%
+  filter(!is.na(p.adjust)) %>%
+  arrange(p.adjust) %>%
+  slice(1:10) %>%
+  mutate(
+    Description = factor(Description, levels = rev(Description)),
+    TopHit = ifelse(row_number() == 1, "Top hit", "Other"),
+    Alpha = ifelse(TopHit == "Top hit", 1, 0.5)
+  )
+
+# Lollipop plot
+up_plot <- ggplot(top10_go_up, aes(y = Description)) +
+  # Stems
+  geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description),
+               color = "grey70") +
+
+  # Points with fill mapped to TopHit
+  geom_point(aes(x = -log10(p.adjust), size = Count, fill = TopHit),
+             shape = 21, color = "black", stroke = 0.5, alpha = top10_go_up$Alpha) +
+
+  scale_fill_manual(values = c("Top hit" = "red", "Other" = "grey70")) +
+  scale_size_continuous(range = c(3,7)) +
+  theme_classic(base_size = 14) +
+  labs(
+    x = "-log10 adjusted p-value",
+    y = "GO Term",
+    size = "Gene Count",
+    fill = "Significance",
+    title = "Top 10 DOX GO BP Terms"
+  )
+
+# Save figure
+ggsave("up_GO.png", plot = up_plot, width = 8.2, height = 3, dpi = 300)
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Read GO DOWN file
+go_down <- read.csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_DOWN_BP_simplified.csv")
+
+# Select top 10 hits by p.adjust
+top10_go_down <- go_down %>%
+  filter(!is.na(p.adjust)) %>%
+  arrange(p.adjust) %>%
+  slice(1:10) %>%
+  mutate(
+    Description = factor(Description, levels = rev(Description)),
+    TopHit = ifelse(row_number() == 1, "Top hit", "Other"),
+    Alpha = ifelse(TopHit == "Top hit", 1, 0.5)
+  )
+
+# Lollipop plot
+down_plot <- ggplot(top10_go_down, aes(y = Description)) +
+  # Stems
+  geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description),
+               color = "grey70") +
+
+  # Points with fill mapped to TopHit
+  geom_point(aes(x = -log10(p.adjust), size = Count, fill = TopHit),
+             shape = 21, color = "black", stroke = 0.5, alpha = top10_go_down$Alpha) +
+
+  scale_fill_manual(values = c("Top hit" = "blue", "Other" = "grey70")) +
+  scale_size_continuous(range = c(3,7)) +
+  theme_classic(base_size = 14) +
+  labs(
+    x = "-log10 adjusted p-value",
+    y = "GO Term",
+    size = "Gene Count",
+    fill = "Significance",
+    title = "Top 10 NO DOX GO BP Terms"
+  )
+
+ggsave("down_GO.png", plot = down_plot, width = 8, height = 3, dpi = 300)
+```
+
+
+```{r}
+library(dplyr)
+library(readr)
+
+# Read your DEGs
+my_degs <- read_csv("DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv") %>%
+  dplyr::select(symbol, log2FoldChange, padj)
+
+# Compute Z-score for log2FC
+my_degs <- my_degs %>%
+  mutate(zscore_my = (log2FoldChange - mean(log2FoldChange, na.rm = TRUE)) / 
+                       sd(log2FoldChange, na.rm = TRUE))
+
+# --- New published dataset ---
+alz_df <- read_csv("alz70025-sup-0006-tabless10.csv")
+
+# Standardize column names
+colnames(alz_df) <- gsub("-", "_", colnames(alz_df))  # replace hyphens with underscores if needed
+
+# Keep relevant columns and rename
+alz_df <- alz_df %>%
+  dplyr::select(symbol = gene_symbol, zscore_pub = Zscore, p_pub = P_value)
+
+
+merged_df <- inner_join(my_degs, alz_df, by = "symbol")
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+m <- 4       # slope of dividing lines
+r0 <- 0.5    # radius of neutral circle
+
+merged_df <- merged_df %>%
+  mutate(
+    distance = sqrt(zscore_my^2 + zscore_pub^2),
+    angle = atan2(zscore_pub, zscore_my),  # radians
+    
+    sector = case_when(
+      distance < r0 ~ "Neutral",
+      
+      # First quadrant
+      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my > 1/m & zscore_pub/zscore_my <= m ~ "Concordant Up",
+      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my <= 1/m ~ "Organoid Up",
+      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my > m ~ "Alzheimer's Up",
+      
+      # Second quadrant
+      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my < -1/m & zscore_pub/zscore_my >= -m ~ "Organoid Down, Alzheimer's Up",
+      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my >= -1/m ~ "Organoid Down",
+      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my < -m ~ "Alzheimer's Up",
+      
+      # Third quadrant
+      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my > 1/m & zscore_pub/zscore_my <= m ~ "Concordant Down",
+      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my <= 1/m ~ "Organoid Down",
+      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my > m ~ "Alzheimer's Down",
+      
+      # Fourth quadrant
+      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my < -1/m & zscore_pub/zscore_my >= -m ~ "Organoid Up, Alzheimer's Down",
+      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my >= -1/m ~ "Organoid Up",
+      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my < -m ~ "Alzheimer's Down",
+      
+      TRUE ~ "Other"
+    )
+  )
+
+# Assign colors for plotting
+sector_colors <- c(
+  "Neutral" = "grey50",
+  "Organoid Up" = "red",
+  "Alzheimer's Up" = "rosybrown2",
+  "Organoid Down" = "blue",
+  "Alzheimer's Down" = "lightblue",
+  "Concordant Up" = "palevioletred2",
+  "Concordant Down" = "darkturquoise",
+  "Organoid Up, Alzheimer's Down" = "mediumpurple2",
+  "Organoid Down, Alzheimer's Up" = "tan3",
+  "Other" = "grey50"
+)
+
+# Scatter plot with lines
+zscore_plot <- ggplot(merged_df, aes(x = zscore_my, y = zscore_pub, color = sector)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(intercept = 0, slope = m, color = "black", linetype = "dashed") +
+  geom_abline(intercept = 0, slope = -m, color = "black", linetype = "dashed") +
+  geom_abline(intercept = 0, slope = 1/m, color = "black", linetype = "dashed") +
+  geom_abline(intercept = 0, slope = -1/m, color = "black", linetype = "dashed") +
+  annotate("path",
+           x = r0 * cos(seq(0, 2*pi, length.out = 100)),
+           y = r0 * sin(seq(0, 2*pi, length.out = 100)),
+           color = "black", linetype = "dotted") +
+  scale_color_manual(values = sector_colors) +
+  theme_classic(base_size = 14) +
+  labs(
+    x = "Organoid Z-score",
+    y = "Alzheimer's Z-score",
+    color = "Sector",
+    title = paste0("Z-score Comparison with 9+ Sectors, m = ", m)
+  ) +
+  theme(
+    panel.border = element_rect(color = 'black', fill = NA, size = 1)
+  )
+
+```
+```{r}
+ggsave("scatter_plot.png", plot = zscore_plot, width = 9, height = 5, dpi = 300)
+```
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+
+# Make a list of genes for each sector
+sector_genes <- merged_df %>%
+  group_by(sector) %>%
+  summarise(genes = list(symbol), .groups = "drop")
+
+
+go_results <- list()
+
+for (i in seq_len(nrow(sector_genes))) {
+  s_name <- sector_genes$sector[i]
+  genes <- sector_genes$genes[[i]]
+  
+  # Convert symbols to Entrez IDs
+  entrez_genes <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)$ENTREZID
+  
+  ego <- enrichGO(
+    gene         = entrez_genes,
+    OrgDb        = org.Hs.eg.db,
+    keyType      = "ENTREZID",
+    ont          = "BP",
+    pAdjustMethod = "BH",
+    qvalueCutoff  = 0.05,
+    readable     = TRUE
+  )
+  
+  # Only continue if there are results
+  if (!is.null(ego) && nrow(ego@result) > 0) {
+    # Simplify GO terms
+    ego_simpl <- clusterProfiler::simplify(
+      ego,
+      cutoff = 0.5,
+      by = "p.adjust",
+      select_fun = min
+    )
+    
+    go_results[[s_name]] <- ego_simpl
+    message("GO enrichment done for sector: ", s_name, " | Terms: ", nrow(ego_simpl@result))
+  } else {
+    go_results[[s_name]] <- NULL
+    message("No GO terms for sector: ", s_name)
+  }
+}
+
+# Create output directory if it doesn't exist
+out_dir <- "GO_sector_results"
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir)
+}
+
+# Export all results
+for (s in names(go_results)) {
+  ego <- go_results[[s]]
+  if (!is.null(ego)) {
+    out_file <- file.path(
+      out_dir,
+      paste0("GO_", gsub("[^[:alnum:]_]", "", s), "_all.csv")
+    )
+    write.csv(ego@result, file = out_file, row.names = FALSE, quote = TRUE)
+    message("Saved GO terms for sector ", s, " to ", out_file)
+  }
+}
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+
+# Function to create and save lollipop plot
+plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_plot_") {
+  
+  # Read CSV
+  go_data <- read.csv(file)
+  
+  # Ensure p.adjust exists
+  if (!"p.adjust" %in% colnames(go_data)) {
+    stop("The CSV file must have a 'p.adjust' column.")
+  }
+  
+  # Select top 10 hits by adjusted p-value
+  top_hits <- go_data %>%
+    filter(!is.na(p.adjust)) %>%
+    arrange(p.adjust) %>%
+    slice(1:10) %>%
+    mutate(
+      Description = factor(Description, levels = rev(Description)),
+      TopHit = ifelse(row_number() == 1, "Top hit", "Other"),
+      Alpha = ifelse(TopHit == "Top hit", 1, 0.5)
+    )
+  
+  # Skip if no data
+  if (nrow(top_hits) == 0) {
+    message("No GO terms to plot for file: ", file)
+    return(NULL)
+  }
+  
+  # Lollipop plot
+  p <- ggplot(top_hits, aes(y = Description)) +
+    geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description),
+                 color = "grey70") +
+    geom_point(aes(x = -log10(p.adjust), size = Count, fill = TopHit),
+               shape = 21, color = "black", stroke = 0.5, alpha = top_hits$Alpha) +
+    scale_fill_manual(values = c("Top hit" = top_color, "Other" = "grey70")) +
+    scale_size_continuous(range = c(3,7)) +
+    theme_classic(base_size = 14) +
+    labs(
+      x = "-log10 adjusted p-value",
+      y = "GO Term",
+      size = "Gene Count",
+      fill = "Significance",
+      title = paste("Top 10 GO BP Terms:", tools::file_path_sans_ext(basename(file)))
+    )
+  
+  # Save plot
+  out_file <- paste0(output_prefix, "_", tools::file_path_sans_ext(basename(file)), ".png")
+  ggsave(out_file, plot = p, width = 9.5, height = 3, dpi = 300)
+  message("Saved plot to ", out_file)
+}
+```
+
+```{r}
+# Make plots
+plot_go_lollipop("GO_sector_results/GO_OrganoidUp_all.csv", top_color = "red")
+plot_go_lollipop("GO_sector_results/GO_OrganoidDown_all.csv", top_color = "blue")
+plot_go_lollipop("GO_sector_results/GO_AlzheimersUp_all.csv", top_color = "rosybrown2")
+plot_go_lollipop("GO_sector_results/GO_AlzheimersDown_all.csv", top_color = "lightblue")
+plot_go_lollipop("GO_sector_results/GO_ConcordantUp_all.csv", top_color = "palevioletred2")
+plot_go_lollipop("GO_sector_results/GO_ConcordantDown_all.csv", top_color = "darkturquoise")
+plot_go_lollipop("GO_sector_results/GO_OrganoidUpAlzheimersDown_all.csv", top_color = "mediumpurple2")
+plot_go_lollipop("GO_sector_results/GO_OrganoidDownAlzheimersUp_all.csv", top_color = "tan3")
+```
+```{r}
+write_csv(merged_df, "sector_genes_and_z_scores.csv")
+```
+
+### PLOT TRANSCRIPTS PER CELL TYPE USING HPA DATA
+```{r}
+# Load libraries
+library(tidyverse)
+
+# File path
+tsv_file <- "rna_single_nuclei_cluster_type.tsv"
+
+# Explicit gene order (top → bottom)
+gene_order <- c(
+  "MAPT", "GREB1L","TBC1D1", "RERGL", "CFAP61", 
+  "ONECUT1", "AKAIN1",
+  "VGLL3", "FGF9",  "GFAP",
+  "S100B", "AQP4", "DAAM2", "TIMP4"
+)
+
+# Explicit cell population order (left → right)
+cluster_order <- c(
+  "amygdala excitatory",
+  "cerebellar inhibitory",
+  "deep-layer corticothalamic and 6b",
+  "deep-layer intratelencephalic",
+  "deep-layer near-projecting",
+  "eccentric medium spiny neuron",
+  "hippocamal CA1-3",
+  "hippocampal CA4",
+  "hippocampal dentate gyrus",
+  "LAMP5-LHX6 and chandelier",
+  "lower rhombic lip",
+  "mammillary body",
+  "medium spiny neuron",
+  "MGE interneuron",
+  "midbrain-derived inhibitory",
+  "miscellaneous",
+  "splatter",
+  "thalamic excitatory",
+  "upper rhombic lip",
+  "upper-layer intratelencephalic",
+  "astrocyte",
+  "Bergmann glia",
+  "central nervous system macrophage",
+  "committed oligodendrocyte precursor",
+  "oligodendrocyte",
+  "oligodendrocyte precursor cell",
+  "ependymal cell",
+  "choroid plexus epithelial cell",
+  "endothelial cell",
+  "pericyte",
+  "vascular associated smooth muscle cell",
+  "fibroblast",
+  "leukocyte"
+)
+
+# Cell population groups for coloring
+cluster_groups <- tibble(
+  `Cluster type` = cluster_order,
+  cell_class = c(
+    # Neural (gold)
+    rep("Neural", 20),
+
+    # Glial (brown)
+    "Glial",  # astrocyte
+    "Glial",  # Bergmann glia
+    "Glial",  # CNS macrophage
+    "Glial",  # committed OPC
+    "Glial",  # oligodendrocyte
+    "Glial",  # OPC
+
+    # Ciliated (green)
+    "Ciliated", # ependymal
+    "Ciliated", # choroid plexus
+
+    # Mural (purple)
+    "Mural", # endothelial
+    "Mural", # pericyte
+    "Mural", # vascular smooth muscle
+
+    # Other
+    "Mesenchymal",
+    "Immune"
+  )
+)
+
+# Read TSV
+rna_df <- readr::read_tsv(tsv_file, col_types = cols())
+
+# Filter and enforce factor levels
+plot_df <- rna_df %>%
+  filter(
+    `Gene name` %in% gene_order,
+    `Cluster type` %in% cluster_order
+  ) %>%
+  left_join(cluster_groups, by = "Cluster type") %>%
+  mutate(
+    Gene = factor(`Gene name`, levels = gene_order),
+    `Cluster type` = factor(`Cluster type`, levels = cluster_order),
+    cell_class = factor(
+      cell_class,
+      levels = c("Neural", "Glial", "Ciliated", "Mural", "Mesenchymal", "Immune")
+    )
+  )
+
+# Dot plot
+dotPlot_plot <- ggplot(plot_df, aes(
+  x = `Cluster type`,
+  y = `Gene name`,
+  size = nCPM,
+  fill = cell_class
+)) +
+  geom_point(
+    shape = 21,
+    color = "black",
+    stroke = 0.4,
+    alpha = 0.9
+  ) +
+  scale_size_continuous(
+    name = "nCPM",
+    range = c(0.5, 6)
+  ) +
+  scale_fill_manual(
+    name = "Cell class",
+    values = c(
+      Neural = "#D4AF37",
+      Glial = "#8B5A2B",
+      Ciliated = "#2E8B57",
+      Mural = "#6A0DAD",
+      Mesenchymal = "#E67E22",
+      Immune = "#C0392B"
+    )
+  ) +
+  labs(
+    x = "Cell population",
+    y = "Gene",
+    title = "Single-nuclei RNA expression across brain cell populations"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_discrete(limits = rev(gene_order))
+
+ggsave("HPA_expression.png", plot = dotPlot_plot, width = 7, height = 4.5, dpi = 300)
+```
+
