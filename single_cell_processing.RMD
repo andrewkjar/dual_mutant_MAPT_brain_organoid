@@ -137,6 +137,18 @@ ggsave(plot = swarm_plot,
   dpi = 300
 )
 
+plot <- ggplot(da_results, aes(logFC, -log10(SpatialFDR))) + 
+  geom_point() +
+  geom_hline(yintercept = 1) + ## Mark significance threshold (10% FDR) 
+  theme_prism()
+
+ggsave(plot = plot,
+  filename = "2025.12.19_Milo_DA_FDR_plot_NO_DOX_DOX.png",
+  width = 3,
+  height = 3,
+  dpi = 300
+)
+
 ## Comparison two: P301L,V337M vs P301L,V337M DOX PURO
 so.merged.sub2 <- subset(so.merged.joined, condition %in% c('P301L,V337M','P301L,V337M DOX PURO'))
 
@@ -180,6 +192,18 @@ swarm_plot <- ggplot(da_sub, aes(x = cell_type, y = logFC, color = logFC)) +
 ggsave(plot = swarm_plot,
   filename = "2025.12.19_Milo_DA_Excitatory_vs_RadialGlia_beeswarm_NO_DOX_DOX_PURO.png",
   width = 5,
+  height = 3,
+  dpi = 300
+)
+
+plot <- ggplot(da_results, aes(logFC, -log10(SpatialFDR))) + 
+  geom_point() +
+  geom_hline(yintercept = 1) + ## Mark significance threshold (10% FDR) 
+  theme_prism()
+
+ggsave(plot = plot,
+  filename = "2025.12.19_Milo_DA_FDR_plot_NO_DOX_DOX_PURO.png",
+  width = 3,
   height = 3,
   dpi = 300
 )
