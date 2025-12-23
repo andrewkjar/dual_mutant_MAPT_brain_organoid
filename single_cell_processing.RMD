@@ -1,0 +1,185 @@
+# Import libraries
+library(Seurat)
+library(dplyr)
+library(ggprism)
+library(ggplot2)
+library(DESeq2)
+library(pheatmap)
+library(ggbreak)
+library(miloR)
+library(zellkonverter)
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(ggprism)
+
+# Read in full alignments
+so.3.data <- Read10X("13580-AK-3_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.3 <- CreateSeuratObject(so.3.data, min.cells = 3, min.features = 200, project = 'NO DOX_1')
+
+so.4.data <- Read10X("13580-AK-4_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.4 <- CreateSeuratObject(so.4.data, min.cells = 3, min.features = 200, project = 'NO DOX_2')
+
+so.5.data <- Read10X("13580-AK-5_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.5 <- CreateSeuratObject(so.5.data, min.cells = 3, min.features = 200, project = 'DOX_1')
+
+so.6.data <- Read10X("13580-AK-6_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.6 <- CreateSeuratObject(so.6.data, min.cells = 3, min.features = 200, project = 'DOX_2')
+
+so.7.data <- Read10X("13580-AK-7_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.7 <- CreateSeuratObject(so.7.data, min.cells = 3, min.features = 200, project = 'DOX PURO_1')
+
+so.8.data <- Read10X("13580-AK-8_S1_L005_results/filtered_matrix/sensitivity_5/")
+so.8 <- CreateSeuratObject(so.8.data, min.cells = 3, min.features = 200, project = 'DOX PURO_2')
+
+# Merge
+so.merged <- merge(so.3, c(so.4, so.5, so.6, so.7, so.8))
+so.merged <- NormalizeData(so.merged)
+so.merged <- FindVariableFeatures(so.merged, selection.method = "vst", nfeatures = 2000)
+so.merged <- ScaleData(so.merged, verbose = FALSE)
+so.merged <- RunPCA(so.merged, npcs = 50, verbose = FALSE)
+so.merged <- RunUMAP(so.merged, reduction = "pca", dims = 1:50)
+so.merged <- FindNeighbors(so.merged, reduction = "pca", dims = 1:50)
+so.merged <- FindClusters(so.merged, resolution = 2)
+
+so.merged$cell_type <- so.merged$RNA_snn_res.2
+so.merged$cell_type <- recode(so.merged$cell_type,
+                              "0" = "Excitatory neurons",
+                              "1" = "Excitatory neurons",
+                              "2" = "Excitatory neurons",
+                              "3" = "Excitatory neurons",
+                              "4" = "Excitatory neurons",
+                              "5" = "Radial glia",
+                              "6" = "Radial glia",
+                              "7" = "Radial glia",
+                              "8" = "Intermediate progenitors",
+                              "9" = "Excitatory neurons",
+                              "10" = "Excitatory neurons",
+                              "11" = "Excitatory neurons"
+                                )
+
+pdf("2025.08.22_DimPlots.pdf", width = 3, height = 3)
+DimPlot(so.merged, group.by = 'cell_type', cols = c('darkturquoise','pink','palegreen'))
+DimPlot(so.merged, group.by = 'cell_type', cols = c('darkturquoise','pink','palegreen')) + NoLegend()
+DimPlot(so.merged, group.by = 'orig.ident', cols = 
+          c('red4','red4','red','red','gray','gray'))
+DimPlot(so.merged, group.by = 'orig.ident', cols = 
+          c('red4','red4','red','red','gray','gray')) + NoLegend()
+
+pdf("2025.08.22_QC_metrics.pdf", width = 4, height = 4)
+VlnPlot(so.merged, feature = "nCount_RNA", group.by = "orig.ident",
+        cols = c('red4','red4','red','red','gray','gray')) +
+  scale_y_break(c(10000, 40000), scales = 0.3) +
+  NoLegend()
+VlnPlot(so.merged, feature = "nFeature_RNA", group.by = 'orig.ident',
+        cols = c('red4','red4','red','red','gray','gray')) +
+  NoLegend()
+
+pdf("2025.08.22_FeaturePlots.pdf", width = 15, height = 2)
+FeaturePlot(so.merged, features = c('SOX2','GLI3','EOMES','TOP2A','MAP2','MAPT'), order = T, ncol = 6)
+
+
+so.merged$condition <- so.merged$orig.ident
+so.merged$condition <- recode(so.merged$condition,
+                            "DOX PURO_1" = "P301L,V337M DOX PURO",
+                            "DOX PURO_2" = "P301L,V337M DOX PURO",
+                            "DOX_1" = "P301L,V337M DOX",
+                            "DOX_2" = "P301L,V337M DOX",
+                            "NO DOX_1" = "P301L,V337M",
+                            "NO DOX_2" = "P301L,V337M"
+                              )
+so.merged.joined <- JoinLayers(so.merged)
+# Run Milo for each comparison
+## Comparison one: P301L,V337M vs P301L,V337M DOX
+so.merged.sub1 <- subset(so.merged.joined, condition %in% c('P301L,V337M','P301L,V337M DOX'))
+
+so.merged.milo <- Milo(as.SingleCellExperiment(so.merged.sub1))
+so.merged.milo <- buildGraph(so.merged.milo, k = 10, d = 30)
+so.merged.milo <- makeNhoods(so.merged.milo, prop = 0.1, k = 10, d=30, refined = TRUE)
+so.merged.milo <- countCells(so.merged.milo, meta.data = data.frame(colData(so.merged.milo)), samples="orig.ident")
+
+milo_design <- data.frame(colData(so.merged.milo))[,c("orig.ident", "condition")]
+milo_design <- distinct(milo_design)
+rownames(milo_design) <- milo_design$orig.ident
+## Reorder rownames to match columns of nhoodCounts(milo)
+milo_design <- milo_design[colnames(nhoodCounts(so.merged.milo)), , drop=FALSE]
+
+so.merged.milo <- calcNhoodDistance(so.merged.milo, d=30)
+rownames(milo_design) <- milo_design$orig.ident
+da_results <- testNhoods(so.merged.milo, design = ~ condition, design.df = milo_design)
+
+so.merged.milo <- buildNhoodGraph(so.merged.milo)
+
+da_results <- annotateNhoods(so.merged.milo, da_results, coldata_col = "cell_type")
+write.csv(da_results, "2025.12.19_NO_DOX_v_DOX_da_results_Milo.csv")
+
+keep_types <- c("Excitatory neurons", "Radial glia")
+
+da_sub <- da_results %>%
+  filter(cell_type %in% keep_types) %>%
+  mutate(
+    cell_type = factor(cell_type, levels = keep_types),
+    logFC = as.numeric(logFC)
+  )
+
+swarm_plot <- ggplot(da_sub, aes(x = cell_type, y = logFC, color = logFC)) +
+  geom_quasirandom(width = 0.25, alpha = 1, size = 2) +
+  scale_color_gradient2() +
+  theme_classic() +
+  labs(x = NULL, y = "logFC")+
+  theme_prism() +
+  coord_flip()
+
+ggsave(plot = swarm_plot,
+  filename = "2025.12.19_Milo_DA_Excitatory_vs_RadialGlia_beeswarm_NO_DOX_DOX.png",
+  width = 5,
+  height = 3,
+  dpi = 300
+)
+
+## Comparison two: P301L,V337M vs P301L,V337M DOX PURO
+so.merged.sub2 <- subset(so.merged.joined, condition %in% c('P301L,V337M','P301L,V337M DOX PURO'))
+
+so.merged.milo <- Milo(as.SingleCellExperiment(so.merged.sub2))
+so.merged.milo <- buildGraph(so.merged.milo, k = 10, d = 30)
+so.merged.milo <- makeNhoods(so.merged.milo, prop = 0.1, k = 10, d=30, refined = TRUE)
+so.merged.milo <- countCells(so.merged.milo, meta.data = data.frame(colData(so.merged.milo)), samples="orig.ident")
+
+milo_design <- data.frame(colData(so.merged.milo))[,c("orig.ident", "condition")]
+milo_design <- distinct(milo_design)
+rownames(milo_design) <- milo_design$orig.ident
+## Reorder rownames to match columns of nhoodCounts(milo)
+milo_design <- milo_design[colnames(nhoodCounts(so.merged.milo)), , drop=FALSE]
+
+so.merged.milo <- calcNhoodDistance(so.merged.milo, d=30)
+rownames(milo_design) <- milo_design$orig.ident
+da_results <- testNhoods(so.merged.milo, design = ~ condition, design.df = milo_design)
+
+so.merged.milo <- buildNhoodGraph(so.merged.milo)
+
+da_results <- annotateNhoods(so.merged.milo, da_results, coldata_col = "cell_type")
+write.csv(da_results, "2025.12.19_NO_DOX_v_DOX_PURO_da_results_Milo.csv")
+
+keep_types <- c("Excitatory neurons", "Radial glia")
+
+da_sub <- da_results %>%
+  filter(cell_type %in% keep_types) %>%
+  mutate(
+    cell_type = factor(cell_type, levels = keep_types),
+    logFC = as.numeric(logFC)
+  )
+
+swarm_plot <- ggplot(da_sub, aes(x = cell_type, y = logFC, color = logFC)) +
+  geom_quasirandom(width = 0.25, alpha = 1, size = 2) +
+  scale_color_gradient2() +
+  theme_classic() +
+  labs(x = NULL, y = "logFC")+
+  theme_prism() +
+  coord_flip()
+
+ggsave(plot = swarm_plot,
+  filename = "2025.12.19_Milo_DA_Excitatory_vs_RadialGlia_beeswarm_NO_DOX_DOX_PURO.png",
+  width = 5,
+  height = 3,
+  dpi = 300
+)
