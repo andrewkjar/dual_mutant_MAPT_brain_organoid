@@ -1,13 +1,19 @@
-```{r}
+#### Load libraries ---
+library(clusterProfiler)
+library(DESeq2)
+library(dplyr)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(ragg)
+library(readr)
 library(Rsubread)
-```
+library(stringr)
+library(tidyverse)
 
-```{r}
+### Read in and align pair-end reads ---
 reads1 <- list.files(path = "/Users/admin/Documents/Andrew/MF bulk RNA seq/", pattern = "R1_001.fastq.gz$", full.names = TRUE)
 reads2 <- list.files(path = "/Users/admin/Documents/Andrew/MF bulk RNA seq/", pattern = "R2_001.fastq.gz$", full.names = TRUE)
-```
 
-```{r}
 # Align based on hg38 files (available online)
 align(index = "hg38_index", 
       readfile1 = reads1, 
@@ -15,38 +21,20 @@ align(index = "hg38_index",
       type = "rna",
       output_format = "BAM", 
       nthreads = 8)
-```
 
-```{r}
 trimmed_dir <- "/Users/admin/Documents/Andrew/MF bulk RNA seq/"
 bam.files <- list.files(trimmed_dir, pattern = "BAM$")
 bam.files
-```
 
-```{r}
+# Compile and save feature Counts
 fc <- featureCounts(bam.files, annot.inbuilt = "hg38", isPairedEnd = TRUE)
-```
-
-```{r}
 saveRDS(fc, "2025.12.11_fc.RDS")
-```
 
-
-```{r}
+### Process feature Counts ---
 fc <- readRDS("2025.12.11_fc.RDS")
-```
 
-```{r}
-library(DESeq2)
-library(EnhancedVolcano)
-library(ggplot2)
-```
-
-```{r}
 count_matrix <- fc$counts
-```
 
-```{r}
 sample_names <- c("14238-MF-0001_S1_L005_R1_001.fastq.gz.subread.BAM",
                   "14238-MF-0002_S1_L005_R1_001.fastq.gz.subread.BAM",
                   "14238-MF-0003_S1_L005_R1_001.fastq.gz.subread.BAM",
@@ -63,21 +51,12 @@ coldata <- data.frame(
   row.names = sample_names,
   protocol = protocol
 )
-```
 
-```{r}
 dds <- DESeqDataSetFromMatrix(countData = fc$counts,
                               colData = coldata,
                               design = ~ protocol)
 dds <- DESeq(dds)
-```
 
-```{r}
-library(org.Hs.eg.db)
-```
-
-
-```{r}
 # Map gene symbols
 gene_symbols <- mapIds(
   org.Hs.eg.db,
@@ -89,31 +68,18 @@ gene_symbols <- mapIds(
 
 # Attach gene symbols to the DESeqDataSet object
 mcols(dds)$symbol <- gene_symbols
-```
 
-
-```{r}
-### ---- SETUP ----
-library(DESeq2)
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(EnhancedVolcano)
-library(dplyr)
-library(ragg)
-```
-
-```{r}
-### RUN DEG, GO, GSEA
+### RUN DEG, GO ---
 dir.create("DE_results", showWarnings = FALSE)
 dir.create("GO_results", showWarnings = FALSE)
 
-### ---- DEFINE CONTRAST ----
+# Define contrast
 g1 <- "P301L,V337M DOX"
 g2 <- "P301L,V337M"
 contrast_name <- paste0(g1, "_vs_", g2)
 message("=== Contrasting: ", contrast_name, " ===")
 
-### ---- GENE SYMBOL MAP ----
+# Map gene symbols
 entrez_ids <- rownames(dds)
 gene_symbols <- mapIds(
   org.Hs.eg.db,
@@ -123,7 +89,7 @@ gene_symbols <- mapIds(
   multiVals = "first"
 )
 
-### ---- DE ANALYSIS ----
+# DE analysis
 res <- results(dds, contrast = c("protocol", g1, g2))
 res <- lfcShrink(dds, contrast = c("protocol", g1, g2),
                  res = res, type = "ashr")
@@ -143,12 +109,12 @@ write.csv(clean,
                            paste0(contrast_name, "_DEGs.csv")),
           row.names = TRUE)
 
-### ---- UP/DOWN SPLITS ----
+# Split into up and down
 up_genes   <- rownames(clean)[clean$padj < 0.05 & clean$log2FoldChange > 0.1]
 down_genes <- rownames(clean)[clean$padj < 0.05 & clean$log2FoldChange < -0.1]
 universe <- rownames(clean)
 
-### ---- GO FUNCTION (FULL + SIMPLIFIED) ----
+# Write function to run GO, and simplify terms for redundancy
 run_GO <- function(genes, direction) {
   if (length(genes) < 5) {
     message("Too few ", direction, " genes for GO (", length(genes), ") — skipping")
@@ -190,56 +156,46 @@ run_GO <- function(genes, direction) {
   return(list(full = ego, simplified = ego_simpl))
 }
 
-### ---- RUN GO ----
+# Run GO function
 ego_up <- run_GO(up_genes, "UP")
 ego_down <- run_GO(down_genes, "DOWN")
 )
-```
-```{r}
-## Load libraries
-library(readr)
-library(dplyr)
-library(stringr)
 
-## Read in files
+### Plot GO analysis and DEGs ---
+# Read in files
 go_down <- read_csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_DOWN_BP.csv")
 go_up   <- read_csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_UP_BP.csv")
 degs    <- read_csv("DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv")
 
-## Extract gene lists from FIRST ROW ONLY
+# Extract gene lists from FIRST ROW ONLY
 down_genes <- str_split(go_down$geneID[1], "/", simplify = TRUE)
 up_genes   <- str_split(go_up$geneID[1], "/", simplify = TRUE)
 
-## Extract pathway descriptions from FIRST ROW ONLY
+# Extract pathway descriptions from FIRST ROW ONLY
 down_desc <- go_down$Description[1]
 up_desc   <- go_up$Description[1]
 
-## Create clean column names
+# Create clean column names
 down_colname <- paste0(down_desc, "_DOWN_pathway")
 up_colname   <- paste0(up_desc, "_UP_pathway")
 
-## Optional: make column names syntactically valid
+# Optional: make column names syntactically valid
 down_colname <- make.names(down_colname)
 up_colname   <- make.names(up_colname)
 
-## Add pathway membership columns to DEG dataframe
+# Add pathway membership columns to DEG dataframe
 degs <- degs %>%
   mutate(
     !!down_colname := symbol %in% down_genes,
     !!up_colname   := symbol %in% up_genes
   )
-```
 
-```{r}
-library(ggplot2)
-library(dplyr)
-
-## Identify pathway columns dynamically
+# Identify pathway columns dynamically
 pathway_cols <- grep("_pathway$", colnames(degs), value = TRUE)
 up_col   <- pathway_cols[grepl("_UP_", pathway_cols)]
 down_col <- pathway_cols[grepl("_DOWN_", pathway_cols)]
 
-## Create plotting category
+# Create plotting category
 degs_plot <- degs %>%
   mutate(
     pathway_status = case_when(
@@ -249,7 +205,7 @@ degs_plot <- degs %>%
     )
   )
 
-## Select top 9 UP and DOWN genes by adjusted p-value
+# Select top 9 UP and DOWN genes by adjusted p-value
 top_genes <- degs_plot %>%
   filter(!is.na(padj)) %>%
   mutate(direction = if_else(log2FoldChange > 0, "UP", "DOWN")) %>%
@@ -257,7 +213,7 @@ top_genes <- degs_plot %>%
   slice_min(order_by = padj, n = 9, with_ties = FALSE) %>%
   ungroup()
 
-## Volcano plot
+# Volcano plot
 volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
   ## Fold change cutoff lines
   geom_vline(
@@ -267,7 +223,7 @@ volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
     linewidth = 0.4
   ) +
 
-  ## Background points
+  # Background points
   geom_point(
     data = filter(degs_plot, pathway_status == "Other"),
     color = "grey70",
@@ -275,7 +231,7 @@ volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
     size = 1.5
   ) +
 
-  ## DOWN pathway points
+  # DOWN pathway points
   geom_point(
     data = filter(degs_plot, pathway_status == "DOWN pathway"),
     color = "blue",
@@ -291,7 +247,7 @@ volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
     size = 2
   ) +
 
-  ## Labels: top 9 UP + top 9 DOWN
+  # Labels: top 9 UP + top 9 DOWN
   geom_text_repel(
     data = top_genes,
     aes(label = symbol),
@@ -310,11 +266,7 @@ volcano_plot <- ggplot(degs_plot, aes(x = log2FoldChange, y = -log10(padj))) +
     y = "-log10 adjusted p-value"
   )
 ggsave("VolcanoPlot_Publication.png", plot = volcano_plot, width = 6, height = 5, dpi = 300)
-```
 
-```{r}
-library(ggplot2)
-library(dplyr)
 
 # Read GO UP file
 go_up <- read.csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_UP_BP_simplified.csv")
@@ -351,14 +303,8 @@ up_plot <- ggplot(top10_go_up, aes(y = Description)) +
     title = "Top 10 DOX GO BP Terms"
   )
 
-# Save figure
 ggsave("up_GO.png", plot = up_plot, width = 8.2, height = 3, dpi = 300)
-```
 
-
-```{r}
-library(ggplot2)
-library(dplyr)
 
 # Read GO DOWN file
 go_down <- read.csv("GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_DOWN_BP_simplified.csv")
@@ -396,13 +342,9 @@ down_plot <- ggplot(top10_go_down, aes(y = Description)) +
   )
 
 ggsave("down_GO.png", plot = down_plot, width = 8, height = 3, dpi = 300)
-```
 
 
-```{r}
-library(dplyr)
-library(readr)
-
+### Compare to patient data (Herberle 2025) ---
 # Read your DEGs
 my_degs <- read_csv("DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv") %>%
   dplyr::select(symbol, log2FoldChange, padj)
@@ -413,7 +355,7 @@ my_degs <- my_degs %>%
                        sd(log2FoldChange, na.rm = TRUE))
 
 # --- New published dataset ---
-alz_df <- read_csv("alz70025-sup-0006-tabless10.csv")
+alz_df <- read_csv("alz70025-sup-0006-tabless10.csv") ## Extracted from frontal lobe tissue, published by Heberle 2025
 
 # Standardize column names
 colnames(alz_df) <- gsub("-", "_", colnames(alz_df))  # replace hyphens with underscores if needed
@@ -422,15 +364,9 @@ colnames(alz_df) <- gsub("-", "_", colnames(alz_df))  # replace hyphens with und
 alz_df <- alz_df %>%
   dplyr::select(symbol = gene_symbol, zscore_pub = Zscore, p_pub = P_value)
 
-
 merged_df <- inner_join(my_degs, alz_df, by = "symbol")
 
-```
-
-```{r}
-library(ggplot2)
-library(dplyr)
-
+# Assign sectors
 m <- 4       # slope of dividing lines
 r0 <- 0.5    # radius of neutral circle
 
@@ -503,21 +439,14 @@ zscore_plot <- ggplot(merged_df, aes(x = zscore_my, y = zscore_pub, color = sect
     panel.border = element_rect(color = 'black', fill = NA, size = 1)
   )
 
-```
-```{r}
+
 ggsave("scatter_plot.png", plot = zscore_plot, width = 9, height = 5, dpi = 300)
-```
 
-```{r}
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(dplyr)
-
+# Run GO analysis on each sector
 # Make a list of genes for each sector
 sector_genes <- merged_df %>%
   group_by(sector) %>%
   summarise(genes = list(symbol), .groups = "drop")
-
 
 go_results <- list()
 
@@ -574,12 +503,6 @@ for (s in names(go_results)) {
     message("Saved GO terms for sector ", s, " to ", out_file)
   }
 }
-```
-
-```{r}
-library(ggplot2)
-library(dplyr)
-library(readr)
 
 # Function to create and save lollipop plot
 plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_plot_") {
@@ -631,9 +554,7 @@ plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_
   ggsave(out_file, plot = p, width = 9.5, height = 3, dpi = 300)
   message("Saved plot to ", out_file)
 }
-```
 
-```{r}
 # Make plots
 plot_go_lollipop("GO_sector_results/GO_OrganoidUp_all.csv", top_color = "red")
 plot_go_lollipop("GO_sector_results/GO_OrganoidDown_all.csv", top_color = "blue")
@@ -643,16 +564,12 @@ plot_go_lollipop("GO_sector_results/GO_ConcordantUp_all.csv", top_color = "palev
 plot_go_lollipop("GO_sector_results/GO_ConcordantDown_all.csv", top_color = "darkturquoise")
 plot_go_lollipop("GO_sector_results/GO_OrganoidUpAlzheimersDown_all.csv", top_color = "mediumpurple2")
 plot_go_lollipop("GO_sector_results/GO_OrganoidDownAlzheimersUp_all.csv", top_color = "tan3")
-```
-```{r}
+
+# Save dataframe with z-scores and sector designations
 write_csv(merged_df, "sector_genes_and_z_scores.csv")
-```
 
-### PLOT TRANSCRIPTS PER CELL TYPE USING HPA DATA
-```{r}
-# Load libraries
-library(tidyverse)
 
+### PLOT TRANSCRIPTS PER CELL TYPE USING HPA DATA ---
 # File path
 tsv_file <- "rna_single_nuclei_cluster_type.tsv"
 
@@ -792,5 +709,3 @@ dotPlot_plot <- ggplot(plot_df, aes(
   scale_y_discrete(limits = rev(gene_order))
 
 ggsave("HPA_expression.png", plot = dotPlot_plot, width = 7, height = 4.5, dpi = 300)
-```
-
