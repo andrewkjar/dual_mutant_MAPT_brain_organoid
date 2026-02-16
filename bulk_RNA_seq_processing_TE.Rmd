@@ -1,209 +1,218 @@
-# Import libraries
-library(Seurat)
-library(dplyr)
-library(ggprism)
-library(ggplot2)
+# Import libraries 
+library(atena)
+library(SummarizedExperiment)
 library(DESeq2)
-library(pheatmap)
-library(ggbreak)
-library(miloR)
-library(zellkonverter)
-library(dplyr)
-library(ggplot2)
-library(ggbeeswarm)
-library(ggprism)
+library(tidyverse)
+library(Rsamtools)
+library(GenomicAlignments)
+library(GenomicRanges)
+library(data.table)
 
-# Read in full alignments
-so.3.data <- Read10X("13580-AK-3_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.3 <- CreateSeuratObject(so.3.data, min.cells = 3, min.features = 200, project = 'NO DOX_1')
+# Path to a BAM file
+bam_file <- "14238-MF-0001_S1_L005_R1_001.fastq.gz.subread.BAM"
 
-so.4.data <- Read10X("13580-AK-4_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.4 <- CreateSeuratObject(so.4.data, min.cells = 3, min.features = 200, project = 'NO DOX_2')
+# Open BAM file
+bam <- BamFile(bam_file)
 
-so.5.data <- Read10X("13580-AK-5_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.5 <- CreateSeuratObject(so.5.data, min.cells = 3, min.features = 200, project = 'DOX_1')
+# Read a small subset of reads
+reads <- readGAlignments(bam, param=ScanBamParam(what=c("strand")))
 
-so.6.data <- Read10X("13580-AK-6_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.6 <- CreateSeuratObject(so.6.data, min.cells = 3, min.features = 200, project = 'DOX_2')
+# Count strands
+table(strand(reads))
+rm(bam, bam_file, reads)
 
-so.7.data <- Read10X("13580-AK-7_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.7 <- CreateSeuratObject(so.7.data, min.cells = 3, min.features = 200, project = 'DOX PURO_1')
+# Results indicate this is unstranded library
+# Proceed to TE alignment and quantification
 
-so.8.data <- Read10X("13580-AK-8_S1_L005_results/filtered_matrix/sensitivity_5/")
-so.8 <- CreateSeuratObject(so.8.data, min.cells = 3, min.features = 200, project = 'DOX PURO_2')
+# Download necessary data
+#wget http://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/rmsk.txt.gz
+#gunzip rmsk.txt.gz
 
-# Merge
-so.merged <- merge(so.3, c(so.4, so.5, so.6, so.7, so.8))
-so.merged <- NormalizeData(so.merged)
-so.merged <- FindVariableFeatures(so.merged, selection.method = "vst", nfeatures = 2000)
-so.merged <- ScaleData(so.merged, verbose = FALSE)
-so.merged <- RunPCA(so.merged, npcs = 50, verbose = FALSE)
-so.merged <- RunUMAP(so.merged, reduction = "pca", dims = 1:50)
-so.merged <- FindNeighbors(so.merged, reduction = "pca", dims = 1:50)
-so.merged <- FindClusters(so.merged, resolution = 2)
+##########################################
+# 1) Prepare BAM file list
+##########################################
+bam_files <- c(
+  "14238-MF-0001_S1_L005_R1_001.fastq.gz.subread.BAM",
+  "14238-MF-0002_S1_L005_R1_001.fastq.gz.subread.BAM",
+  "14238-MF-0003_S1_L005_R1_001.fastq.gz.subread.BAM",
+  "14238-MF-0004_S1_L005_R1_001.fastq.gz.subread.BAM",
+  "14238-MF-0005_S1_L005_R1_001.fastq.gz.subread.BAM",
+  "14238-MF-0006_S1_L005_R1_001.fastq.gz.subread.BAM"
+)
+bfl <- BamFileList(bam_files, yieldSize = 2000000)
 
-so.merged$cell_type <- so.merged$RNA_snn_res.2
-so.merged$cell_type <- recode(so.merged$cell_type,
-                              "0" = "Excitatory neurons",
-                              "1" = "Excitatory neurons",
-                              "2" = "Excitatory neurons",
-                              "3" = "Excitatory neurons",
-                              "4" = "Excitatory neurons",
-                              "5" = "Radial glia",
-                              "6" = "Radial glia",
-                              "7" = "Radial glia",
-                              "8" = "Intermediate progenitors",
-                              "9" = "Excitatory neurons",
-                              "10" = "Excitatory neurons",
-                              "11" = "Excitatory neurons"
-                                )
+##########################################
+# 2) Import full UCSC RepeatMasker table
+##########################################
+# This assumes you have downloaded & unzipped rmsk.txt
+rmsk <- fread("rmsk.txt", header = FALSE)
 
-pdf("2025.08.22_DimPlots.pdf", width = 3, height = 3)
-DimPlot(so.merged, group.by = 'cell_type', cols = c('darkturquoise','pink','palegreen'))
-DimPlot(so.merged, group.by = 'cell_type', cols = c('darkturquoise','pink','palegreen')) + NoLegend()
-DimPlot(so.merged, group.by = 'orig.ident', cols = 
-          c('red4','red4','red','red','gray','gray'))
-DimPlot(so.merged, group.by = 'orig.ident', cols = 
-          c('red4','red4','red','red','gray','gray')) + NoLegend()
-
-pdf("2025.08.22_QC_metrics.pdf", width = 4, height = 4)
-VlnPlot(so.merged, feature = "nCount_RNA", group.by = "orig.ident",
-        cols = c('red4','red4','red','red','gray','gray')) +
-  scale_y_break(c(10000, 40000), scales = 0.3) +
-  NoLegend()
-VlnPlot(so.merged, feature = "nFeature_RNA", group.by = 'orig.ident',
-        cols = c('red4','red4','red','red','gray','gray')) +
-  NoLegend()
-
-pdf("2025.08.22_FeaturePlots.pdf", width = 15, height = 2)
-FeaturePlot(so.merged, features = c('SOX2','GLI3','EOMES','TOP2A','MAP2','MAPT'), order = T, ncol = 6)
-
-
-so.merged$condition <- so.merged$orig.ident
-so.merged$condition <- recode(so.merged$condition,
-                            "DOX PURO_1" = "P301L,V337M DOX PURO",
-                            "DOX PURO_2" = "P301L,V337M DOX PURO",
-                            "DOX_1" = "P301L,V337M DOX",
-                            "DOX_2" = "P301L,V337M DOX",
-                            "NO DOX_1" = "P301L,V337M",
-                            "NO DOX_2" = "P301L,V337M"
-                              )
-so.merged.joined <- JoinLayers(so.merged)
-# Run Milo for each comparison
-## Comparison one: P301L,V337M vs P301L,V337M DOX
-so.merged.sub1 <- subset(so.merged.joined, condition %in% c('P301L,V337M','P301L,V337M DOX'))
-
-so.merged.milo <- Milo(as.SingleCellExperiment(so.merged.sub1))
-so.merged.milo <- buildGraph(so.merged.milo, k = 10, d = 30)
-so.merged.milo <- makeNhoods(so.merged.milo, prop = 0.1, k = 10, d=30, refined = TRUE)
-so.merged.milo <- countCells(so.merged.milo, meta.data = data.frame(colData(so.merged.milo)), samples="orig.ident")
-
-milo_design <- data.frame(colData(so.merged.milo))[,c("orig.ident", "condition")]
-milo_design <- distinct(milo_design)
-rownames(milo_design) <- milo_design$orig.ident
-## Reorder rownames to match columns of nhoodCounts(milo)
-milo_design <- milo_design[colnames(nhoodCounts(so.merged.milo)), , drop=FALSE]
-
-so.merged.milo <- calcNhoodDistance(so.merged.milo, d=30)
-rownames(milo_design) <- milo_design$orig.ident
-da_results <- testNhoods(so.merged.milo, design = ~ condition, design.df = milo_design)
-
-so.merged.milo <- buildNhoodGraph(so.merged.milo)
-
-da_results <- annotateNhoods(so.merged.milo, da_results, coldata_col = "cell_type")
-write.csv(da_results, "2025.12.19_NO_DOX_v_DOX_da_results_Milo.csv")
-
-keep_types <- c("Excitatory neurons", "Radial glia")
-
-da_sub <- da_results %>%
-  filter(cell_type %in% keep_types) %>%
-  mutate(
-    cell_type = factor(cell_type, levels = keep_types),
-    logFC = as.numeric(logFC)
-  )
-
-swarm_plot <- ggplot(da_sub, aes(x = cell_type, y = logFC, color = logFC)) +
-  geom_quasirandom(width = 0.25, alpha = 1, size = 2) +
-  scale_color_gradient2() +
-  theme_classic() +
-  labs(x = NULL, y = "logFC")+
-  theme_prism() +
-  coord_flip()
-
-ggsave(plot = swarm_plot,
-  filename = "2025.12.19_Milo_DA_Excitatory_vs_RadialGlia_beeswarm_NO_DOX_DOX.png",
-  width = 5,
-  height = 3,
-  dpi = 300
+# Standard RepeatMasker columns (UCSC format)
+colnames(rmsk) <- c(
+  "bin", "swScore", "milliDiv", "milliDel", "milliIns",
+  "genoName", "genoStart", "genoEnd", "genoLeft",
+  "strand",
+  "repName", "repClass", "repFamily",
+  "repStart", "repEnd", "repLeft",
+  "id"
 )
 
-plot <- ggplot(da_results, aes(logFC, -log10(SpatialFDR))) + 
-  geom_point() +
-  geom_hline(yintercept = 1) + ## Mark significance threshold (10% FDR) 
-  theme_prism()
-
-ggsave(plot = plot,
-  filename = "2025.12.19_Milo_DA_FDR_plot_NO_DOX_DOX.png",
-  width = 3,
-  height = 3,
-  dpi = 300
+# Build a GRanges with all metadata
+rmsk_gr <- GRanges(
+  seqnames = rmsk$genoName,
+  ranges   = IRanges(start = rmsk$genoStart + 1, end = rmsk$genoEnd),
+  strand   = rmsk$strand,
+  swScore  = rmsk$swScore,
+  milliDiv = rmsk$milliDiv,
+  milliDel = rmsk$milliDel,
+  milliIns = rmsk$milliIns,
+  repName  = rmsk$repName,
+  repClass = rmsk$repClass,
+  repFamily= rmsk$repFamily,
+  repStart = rmsk$repStart,
+  repEnd   = rmsk$repEnd,
+  repLeft  = rmsk$repLeft
 )
 
-## Comparison two: P301L,V337M vs P301L,V337M DOX PURO
-so.merged.sub2 <- subset(so.merged.joined, condition %in% c('P301L,V337M','P301L,V337M DOX PURO'))
-
-so.merged.milo <- Milo(as.SingleCellExperiment(so.merged.sub2))
-so.merged.milo <- buildGraph(so.merged.milo, k = 10, d = 30)
-so.merged.milo <- makeNhoods(so.merged.milo, prop = 0.1, k = 10, d=30, refined = TRUE)
-so.merged.milo <- countCells(so.merged.milo, meta.data = data.frame(colData(so.merged.milo)), samples="orig.ident")
-
-milo_design <- data.frame(colData(so.merged.milo))[,c("orig.ident", "condition")]
-milo_design <- distinct(milo_design)
-rownames(milo_design) <- milo_design$orig.ident
-## Reorder rownames to match columns of nhoodCounts(milo)
-milo_design <- milo_design[colnames(nhoodCounts(so.merged.milo)), , drop=FALSE]
-
-so.merged.milo <- calcNhoodDistance(so.merged.milo, d=30)
-rownames(milo_design) <- milo_design$orig.ident
-da_results <- testNhoods(so.merged.milo, design = ~ condition, design.df = milo_design)
-
-so.merged.milo <- buildNhoodGraph(so.merged.milo)
-
-da_results <- annotateNhoods(so.merged.milo, da_results, coldata_col = "cell_type")
-write.csv(da_results, "2025.12.19_NO_DOX_v_DOX_PURO_da_results_Milo.csv")
-
-keep_types <- c("Excitatory neurons", "Radial glia")
-
-da_sub <- da_results %>%
-  filter(cell_type %in% keep_types) %>%
-  mutate(
-    cell_type = factor(cell_type, levels = keep_types),
-    logFC = as.numeric(logFC)
-  )
-
-swarm_plot <- ggplot(da_sub, aes(x = cell_type, y = logFC, color = logFC)) +
-  geom_quasirandom(width = 0.25, alpha = 1, size = 2) +
-  scale_color_gradient2() +
-  theme_classic() +
-  labs(x = NULL, y = "logFC")+
-  theme_prism() +
-  coord_flip()
-
-ggsave(plot = swarm_plot,
-  filename = "2025.12.19_Milo_DA_Excitatory_vs_RadialGlia_beeswarm_NO_DOX_DOX_PURO.png",
-  width = 5,
-  height = 3,
-  dpi = 300
+##########################################
+# 3) Parse RepeatMasker annotations
+##########################################
+parsed_rmsk <- rmskatenaparser(
+  rmsk_gr,
+  strict = FALSE,  # include a broad set of TEs
+  insert = 1000    # merge fragments within 1000 bp
 )
 
-plot <- ggplot(da_results, aes(logFC, -log10(SpatialFDR))) + 
-  geom_point() +
-  geom_hline(yintercept = 1) + ## Mark significance threshold (10% FDR) 
-  theme_prism()
-
-ggsave(plot = plot,
-  filename = "2025.12.19_Milo_DA_FDR_plot_NO_DOX_DOX_PURO.png",
-  width = 3,
-  height = 3,
-  dpi = 300
+##########################################
+# 4) Extract TE features by class
+##########################################
+te_features <- c(
+  getLINEs(parsed_rmsk, relLength = 0.0),
+  getSINEs(parsed_rmsk, relLength = 0.0),
+  getLTRs(parsed_rmsk,  relLength = 0.0),
+  getDNAtransposons(parsed_rmsk, relLength = 0.0)
 )
+
+##########################################
+# 5) Build TEtranscripts parameter object
+##########################################
+te_param <- TEtranscriptsParam(
+  bfl,
+  teFeatures   = te_features,
+  geneFeatures = NULL,   # omit gene counts
+  ignoreStrand = TRUE    # unstranded libraries
+)
+
+##########################################
+# 6) Sample metadata
+##########################################
+coldata <- data.frame(
+  condition = factor(c(
+    "P301L_V337M_DOX","P301L_V337M_DOX","P301L_V337M_DOX",
+    "P301L_V337M",     "P301L_V337M",     "P301L_V337M"
+  )),
+  row.names = bam_files
+)
+
+##########################################
+# 7) Quantify TE expression
+##########################################
+te_se <- qtex(
+  te_param,
+  phenodata = coldata
+)
+
+##########################################
+# 8) Extract TE count matrix
+##########################################
+te_counts <- assay(te_se, "counts")
+
+##########################################
+# 9) DESeq2 differential analysis
+##########################################
+dds_te <- DESeqDataSetFromMatrix(
+  countData = te_counts,
+  colData   = coldata,
+  design    = ~ condition
+)
+
+keep <- rowSums(counts(dds_te) >= 10) >= 3
+dds_te <- dds_te[keep,]
+
+dds_te <- DESeq(dds_te)
+
+res_te <- results(
+  dds_te,
+  contrast = c("condition", "P301L_V337M_DOX", "P301L_V337M")
+)
+
+##########################################
+# 10) Inspect top TE families
+##########################################
+res_sorted <- res_te[order(res_te$padj), ]
+head(as.data.frame(res_sorted), 30)
+
+# Save data
+saveRDS(te_se, "2025.12.29_te_se.RDS")
+
+# Convert results to data frame
+res_df <- as.data.frame(res_te)
+res_df$feature <- rownames(res_df)
+
+# Derive a broad class from the feature name
+res_df$TEclass <- with(res_df, ifelse(
+  grepl("^Alu|^MIR", feature), "SINE",
+  ifelse(grepl("^L1|^L2", feature), "LINE",
+  ifelse(grepl("^ERV|^LTR", feature), "LTR",
+  ifelse(grepl("^Charlie|^Tc", feature), "DNA",
+         "Other")))))
+
+# Make TEclass a factor
+res_df$TEclass <- factor(res_df$TEclass,
+                         levels = c("LINE", "SINE", "LTR", "DNA", "Other"))
+
+# Assign colours for the broad classes
+class_cols <- c(
+  "LINE"   = "#1f77b4",
+  "SINE"   = "#ff7f0e",
+  "LTR"    = "#2ca02c",
+  "DNA"    = "#d62728",
+  "Other"  = "grey70"
+)
+
+#png("volcano_TE_by_family.png", width = 2500, height = 2400, res = 600)
+# Draw the volcano plot, colouring by TE class
+with(res_df, plot(
+  log2FoldChange, -log10(padj),
+  pch = 20,
+  col = class_cols[as.character(TEclass)],
+  xlab = "log2 Fold Change",
+  ylab = "-log10 Adjusted P-value",
+  main = "TE Differential Expression P301L,V337M vs P301L,V337M DOX"
+))
+
+# Add threshold lines
+abline(v = c(-1, 1), col = "black", lty = 2)
+abline(h = -log10(0.05), col = "black", lty = 2)
+
+# Optional: add a legend
+legend(
+  "topright",
+  legend = levels(res_df$TEclass),
+  col = class_cols[levels(res_df$TEclass)],
+  pch = 20,
+  cex = 0.8,
+  bty = "n"
+)
+
+# Highlight significant points (padj < 0.05 & |log2FC| > 1)
+sig <- res_df$padj < 0.05 & abs(res_df$log2FoldChange) > 1
+with(res_df[sig,], points(
+  log2FoldChange, -log10(padj),
+  pch = 20,
+  col = class_cols[as.character(TEclass)]
+))
+#dev.off()
+
+# Save output
+write.csv(res_df, "2025.12.19_TE_DESeq2_results.csv")
