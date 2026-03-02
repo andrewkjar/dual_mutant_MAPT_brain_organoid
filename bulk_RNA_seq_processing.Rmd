@@ -406,12 +406,12 @@ merged_df <- merged_df %>%
 sector_colors <- c(
   "Neutral" = "grey50",
   "Organoid Up" = "red",
-  "Alzheimer's Up" = "rosybrown2",
+  "Alzheimer's Up" = "gold",
   "Organoid Down" = "blue",
-  "Alzheimer's Down" = "lightblue",
+  "Alzheimer's Down" = "mediumpurple2",
   "Concordant Up" = "palevioletred2",
   "Concordant Down" = "darkturquoise",
-  "Organoid Up, Alzheimer's Down" = "mediumpurple2",
+  "Organoid Up, Alzheimer's Down" = "tan1",
   "Organoid Down, Alzheimer's Up" = "tan3",
   "Other" = "grey50"
 )
@@ -505,7 +505,7 @@ for (s in names(go_results)) {
 }
 
 # Function to create and save lollipop plot
-plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_plot_") {
+plot_go_lollipop <- function(file, output_prefix = "Lollipop_plot_") {
   
   # Read CSV
   go_data <- read.csv(file)
@@ -521,9 +521,7 @@ plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_
     arrange(p.adjust) %>%
     slice(1:10) %>%
     mutate(
-      Description = factor(Description, levels = rev(Description)),
-      TopHit = ifelse(row_number() == 1, "Top hit", "Other"),
-      Alpha = ifelse(TopHit == "Top hit", 1, 0.5)
+      Description = factor(Description, levels = rev(Description))
     )
   
   # Skip if no data
@@ -536,9 +534,8 @@ plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_
   p <- ggplot(top_hits, aes(y = Description)) +
     geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description),
                  color = "grey70") +
-    geom_point(aes(x = -log10(p.adjust), size = Count, fill = TopHit),
-               shape = 21, color = "black", stroke = 0.5, alpha = top_hits$Alpha) +
-    scale_fill_manual(values = c("Top hit" = top_color, "Other" = "grey70")) +
+    geom_point(aes(x = -log10(p.adjust), size = Count),
+               shape = 21, color = "black", stroke = 0.5, alpha = 1, fill = 'grey75') +
     scale_size_continuous(range = c(3,7)) +
     theme_classic(base_size = 14) +
     labs(
@@ -556,14 +553,14 @@ plot_go_lollipop <- function(file, top_color = "red", output_prefix = "Lollipop_
 }
 
 # Make plots
-plot_go_lollipop("GO_sector_results/GO_OrganoidUp_all.csv", top_color = "red")
-plot_go_lollipop("GO_sector_results/GO_OrganoidDown_all.csv", top_color = "blue")
-plot_go_lollipop("GO_sector_results/GO_AlzheimersUp_all.csv", top_color = "rosybrown2")
-plot_go_lollipop("GO_sector_results/GO_AlzheimersDown_all.csv", top_color = "lightblue")
-plot_go_lollipop("GO_sector_results/GO_ConcordantUp_all.csv", top_color = "palevioletred2")
-plot_go_lollipop("GO_sector_results/GO_ConcordantDown_all.csv", top_color = "darkturquoise")
-plot_go_lollipop("GO_sector_results/GO_OrganoidUpAlzheimersDown_all.csv", top_color = "mediumpurple2")
-plot_go_lollipop("GO_sector_results/GO_OrganoidDownAlzheimersUp_all.csv", top_color = "tan3")
+plot_go_lollipop("GO_sector_results/GO_OrganoidUp_all.csv")
+plot_go_lollipop("GO_sector_results/GO_OrganoidDown_all.csv")
+plot_go_lollipop("GO_sector_results/GO_AlzheimersUp_all.csv")
+plot_go_lollipop("GO_sector_results/GO_AlzheimersDown_all.csv")
+plot_go_lollipop("GO_sector_results/GO_ConcordantUp_all.csv")
+plot_go_lollipop("GO_sector_results/GO_ConcordantDown_all.csv")
+plot_go_lollipop("GO_sector_results/GO_OrganoidUpAlzheimersDown_all.csv")
+plot_go_lollipop("GO_sector_results/GO_OrganoidDownAlzheimersUp_all.csv")
 
 # Save dataframe with z-scores and sector designations
 write_csv(merged_df, "sector_genes_and_z_scores.csv")
