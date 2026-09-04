@@ -9,6 +9,10 @@ library(readr)
 library(Rsubread)
 library(stringr)
 library(tidyverse)
+library(biomaRt)
+library(purrr)
+library(tibble)
+library(ggrepel)
 
 ### Read in and align pair-end reads ---
 reads1 <- list.files(path = "/Users/admin/Documents/Andrew/MF bulk RNA seq/", pattern = "R1_001.fastq.gz$", full.names = TRUE)
@@ -344,226 +348,431 @@ down_plot <- ggplot(top10_go_down, aes(y = Description)) +
 ggsave("down_GO.png", plot = down_plot, width = 8, height = 3, dpi = 300)
 
 
-### Compare to patient data (Herberle 2025) ---
-# Read your DEGs
-my_degs <- read_csv("DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv") %>%
-  dplyr::select(symbol, log2FoldChange, padj)
+### COMPUTE MODULE SCORES
+# File paths
+deg_file <- "DE_results/P301L,V337M DOX_vs_P301L,V337M_DEGs.csv"
+modules_file <- "concensusModules.tsv"
+rosmap_file <- "differentialExpressionSummary.tsv"
 
-# Compute Z-score for log2FC
-my_degs <- my_degs %>%
-  mutate(zscore_my = (log2FoldChange - mean(log2FoldChange, na.rm = TRUE)) / 
-                       sd(log2FoldChange, na.rm = TRUE))
+# Read in the data
+deg_df <- read.csv(deg_file, header = TRUE, stringsAsFactors = FALSE)
+modules_df <- read.delim(modules_file, header = TRUE, stringsAsFactors = FALSE)
+rosmap_df <- read.delim(rosmap_file, header = TRUE, stringsAsFactors = FALSE)
 
-# --- New published dataset ---
-alz_df <- read_csv("alz70025-sup-0006-tabless10.csv") ## Extracted from frontal lobe tissue, published by Heberle 2025
+# Make sure X is numeric (BioMart expects numeric for Entrez)
+deg_df$X <- as.numeric(deg_df$X)
 
-# Standardize column names
-colnames(alz_df) <- gsub("-", "_", colnames(alz_df))  # replace hyphens with underscores if needed
-
-# Keep relevant columns and rename
-alz_df <- alz_df %>%
-  dplyr::select(symbol = gene_symbol, zscore_pub = Zscore, p_pub = P_value)
-
-merged_df <- inner_join(my_degs, alz_df, by = "symbol")
-
-# Assign sectors
-m <- 4       # slope of dividing lines
-r0 <- 0.5    # radius of neutral circle
-
-merged_df <- merged_df %>%
-  mutate(
-    distance = sqrt(zscore_my^2 + zscore_pub^2),
-    angle = atan2(zscore_pub, zscore_my),  # radians
-    
-    sector = case_when(
-      distance < r0 ~ "Neutral",
-      
-      # First quadrant
-      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my > 1/m & zscore_pub/zscore_my <= m ~ "Concordant Up",
-      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my <= 1/m ~ "Organoid Up",
-      zscore_my > 0 & zscore_pub > 0 & zscore_pub/zscore_my > m ~ "Alzheimer's Up",
-      
-      # Second quadrant
-      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my < -1/m & zscore_pub/zscore_my >= -m ~ "Organoid Down, Alzheimer's Up",
-      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my >= -1/m ~ "Organoid Down",
-      zscore_my < 0 & zscore_pub > 0 & zscore_pub/zscore_my < -m ~ "Alzheimer's Up",
-      
-      # Third quadrant
-      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my > 1/m & zscore_pub/zscore_my <= m ~ "Concordant Down",
-      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my <= 1/m ~ "Organoid Down",
-      zscore_my < 0 & zscore_pub < 0 & zscore_pub/zscore_my > m ~ "Alzheimer's Down",
-      
-      # Fourth quadrant
-      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my < -1/m & zscore_pub/zscore_my >= -m ~ "Organoid Up, Alzheimer's Down",
-      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my >= -1/m ~ "Organoid Up",
-      zscore_my > 0 & zscore_pub < 0 & zscore_pub/zscore_my < -m ~ "Alzheimer's Down",
-      
-      TRUE ~ "Other"
-    )
-  )
-
-# Assign colors for plotting
-sector_colors <- c(
-  "Neutral" = "grey50",
-  "Organoid Up" = "red",
-  "Alzheimer's Up" = "gold",
-  "Organoid Down" = "blue",
-  "Alzheimer's Down" = "mediumpurple2",
-  "Concordant Up" = "palevioletred2",
-  "Concordant Down" = "darkturquoise",
-  "Organoid Up, Alzheimer's Down" = "tan1",
-  "Organoid Down, Alzheimer's Up" = "tan3",
-  "Other" = "grey50"
+# Connect to Ensembl
+mart <- useEnsembl(
+  biomart = "genes",
+  dataset = "hsapiens_gene_ensembl",
+  mirror = "useast"
 )
 
-# Scatter plot with lines
-zscore_plot <- ggplot(merged_df, aes(x = zscore_my, y = zscore_pub, color = sector)) +
-  geom_point(alpha = 0.7) +
-  geom_abline(intercept = 0, slope = m, color = "black", linetype = "dashed") +
-  geom_abline(intercept = 0, slope = -m, color = "black", linetype = "dashed") +
-  geom_abline(intercept = 0, slope = 1/m, color = "black", linetype = "dashed") +
-  geom_abline(intercept = 0, slope = -1/m, color = "black", linetype = "dashed") +
-  annotate("path",
-           x = r0 * cos(seq(0, 2*pi, length.out = 100)),
-           y = r0 * sin(seq(0, 2*pi, length.out = 100)),
-           color = "black", linetype = "dotted") +
-  scale_color_manual(values = sector_colors) +
-  theme_classic(base_size = 14) +
+# Get mapping using Entrez IDs
+mapping <- getBM(
+  attributes = c("entrezgene_id", "ensembl_gene_id", "hgnc_symbol"),
+  filters = "entrezgene_id",
+  values = deg_df$X,
+  mart = mart
+)
+
+mapping_clean <- mapping %>%
+  filter(!is.na(ensembl_gene_id)) %>%
+  group_by(entrezgene_id) %>%
+  filter(n() == 1) %>%   # keep only uniquely mapped Entrez IDs
+  ungroup()
+
+# Join back to your dataframe
+deg_df_merged <- deg_df %>%
+  left_join(mapping_clean, by = c("X" = "entrezgene_id"))
+
+# Filter to successfully mapped genes
+deg_df_merged <- deg_df_merged %>% dplyr::filter(!is.na(ensembl_gene_id))
+
+# Filter the patient data to just harmonized Diagnosis score in the DLPFC and the AD-CONTROL comparison
+rosmap_filtered <- rosmap_df %>%
+  filter(
+    Comparison == "AD-CONTROL",
+    Model == "Diagnosis",
+    Tissue == "DLPFC"
+  )
+
+# Step 1: standardize column names
+modules_df <- modules_df %>%
+  dplyr::rename(ensembl_gene_id = `GeneID`)
+
+# Step 2: merge DEG + Modules
+deg_modules <- deg_df_merged %>%
+  inner_join(modules_df, by = "ensembl_gene_id")
+
+# Step 3: merge the above with filtered ROSMAP
+final_merged <- deg_modules %>%
+  inner_join(rosmap_filtered, by = "ensembl_gene_id")
+
+# Compute correlation for each Module
+module_correlations <- final_merged %>%
+  group_by(Module) %>%   # adjust this if your module column has a different name
+  summarise(
+    cor_result = list(cor.test(log2FoldChange, logFC)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    cor_estimate = map_dbl(cor_result, ~ .x$estimate),
+    p_value     = map_dbl(cor_result, ~ .x$p.value)
+  ) %>%
+  dplyr::select(Module, cor_estimate, p_value)
+
+
+module_correlations_filtered <- final_merged %>%
+  group_by(Module) %>%
+  summarise(
+    cor_result = list(
+      cor.test(log2FoldChange, logFC, use = "complete.obs")
+    ),
+    n_pairs = sum(!is.na(log2FoldChange) & !is.na(logFC)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    cor_estimate = map_dbl(cor_result, ~ .x$estimate),
+    p_value     = map_dbl(cor_result, ~ .x$p.value)
+  ) %>%
+  dplyr::select(Module, cor_estimate, p_value, n_pairs)
+
+cluster_lookup <- c(
+  # Cluster A: ECM organization
+  "TCXblue" = "Consensus Cluster A (ECM Organization)",
+  "PHGyellow" = "Consensus Cluster A (ECM Organization)",
+  "IFGyellow" = "Consensus Cluster A (ECM Organization)",
+  
+  # Cluster B: Immune system
+  "DLPFCblue" = "Consensus Cluster B (Immune system)",
+  "CBEturquoise" = "Consensus Cluster B (Immune system)",
+  "IFGturquoise" = "Consensus Cluster B (Immune system)",
+  "FPturquoise" = "Consensus Cluster B (Immune system)",
+  "PHGturquoise" = "Consensus Cluster B (Immune system)",
+  "TCXturquoise" = "Consensus Cluster B (Immune system)",
+  "STGblue" = "Consensus Cluster B (Immune system)",
+  
+  # Cluster C: Neuronal system
+  "IFGbrown" = "Consensus Cluster C (Neuronal system)",
+  "STGbrown" = "Consensus Cluster C (Neuronal system)",
+  "DLPFCyellow" = "Consensus Cluster C (Neuronal system)",
+  "TCXgreen" = "Consensus Cluster C (Neuronal system)",
+  "FPyellow" = "Consensus Cluster C (Neuronal system)",
+  "CBEyellow" = "Consensus Cluster C (Neuronal system)",
+  "PHGbrown" = "Consensus Cluster C (Neuronal system)",
+  
+  # Cluster D: Cell Cycle, NMD
+  "DLPFCbrown" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "STGyellow" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "PHGgreen" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "CBEbrown" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "TCXyellow" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "IFGblue" = "Consensus Cluster D (Cell Cycle, NMD)",
+  "FPblue" = "Consensus Cluster D (Cell Cycle, NMD)",
+  
+  # Cluster E: Organelle Biogenesis, Cellular stress response
+  "FPbrown" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)",
+  "CBEblue" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)",
+  "DLPFCturquoise" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)",
+  "TCXbrown" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)",
+  "STGturquoise" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)",
+  "PHGblue" = "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)"
+)
+
+module_correlations <- module_correlations %>%
+  mutate(Consensus_Cluster = cluster_lookup[Module])
+
+# Ensure cluster_colors vector exists
+cluster_colors <- c(
+  "Consensus Cluster A (ECM Organization)" = "orange",
+  "Consensus Cluster B (Immune system)" = "purple",
+  "Consensus Cluster C (Neuronal system)" = "green",
+  "Consensus Cluster D (Cell Cycle, NMD)" = "brown",
+  "Consensus Cluster E (Organelle Biogenesis, Cellular Stress Response)" = "blue"
+)
+
+
+# Scatter plot with Prism-style aesthetics
+ggplot(module_correlations, aes(
+    x = cor_estimate,
+    y = -log10(p_value),
+    label = Module,
+    color = Consensus_Cluster
+  )) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text_repel(
+    size = 3,
+    max.overlaps = 20,
+    box.padding = 0.3,
+    point.padding = 0.5
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_color_manual(values = cluster_colors) +
   labs(
-    x = "Organoid Z-score",
-    y = "Alzheimer's Z-score",
-    color = "Sector",
-    title = paste0("Z-score Comparison with 9+ Sectors, m = ", m)
+    x = "Correlation Coefficient (Organoid Model vs. AD DLPFC)",
+    y = "-log10(p-value)",
+    title = "Module-wise Correlation between Organoid Model vs. Patient Tissue",
+    color = "Consensus Cluster"
   ) +
   theme(
-    panel.border = element_rect(color = 'black', fill = NA, size = 1)
-  )
-
-
-ggsave("scatter_plot.png", plot = zscore_plot, width = 9, height = 5, dpi = 300)
-
-# Run GO analysis on each sector
-# Make a list of genes for each sector
-sector_genes <- merged_df %>%
-  group_by(sector) %>%
-  summarise(genes = list(symbol), .groups = "drop")
-
-go_results <- list()
-
-for (i in seq_len(nrow(sector_genes))) {
-  s_name <- sector_genes$sector[i]
-  genes <- sector_genes$genes[[i]]
-  
-  # Convert symbols to Entrez IDs
-  entrez_genes <- bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)$ENTREZID
-  
-  ego <- enrichGO(
-    gene         = entrez_genes,
-    OrgDb        = org.Hs.eg.db,
-    keyType      = "ENTREZID",
-    ont          = "BP",
-    pAdjustMethod = "BH",
-    qvalueCutoff  = 0.05,
-    readable     = TRUE
-  )
-  
-  # Only continue if there are results
-  if (!is.null(ego) && nrow(ego@result) > 0) {
-    # Simplify GO terms
-    ego_simpl <- clusterProfiler::simplify(
-      ego,
-      cutoff = 0.5,
-      by = "p.adjust",
-      select_fun = min
-    )
+    # White background, minimal grid
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
     
-    go_results[[s_name]] <- ego_simpl
-    message("GO enrichment done for sector: ", s_name, " | Terms: ", nrow(ego_simpl@result))
-  } else {
-    go_results[[s_name]] <- NULL
-    message("No GO terms for sector: ", s_name)
-  }
+    # Axis lines on bottom and left only
+    axis.line = element_line(color = "black"),
+    
+    # Text
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold"),
+    
+    # Legend
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(face = "bold")
+  ) +
+  xlim(-0.25, 0.25)
+
+# Inspect modules (not presented in manuscript)
+# --- Step 1: read CSV ---
+file_path <- "GO_results/P301L,V337M DOX_vs_P301L,V337M_GO_UP_BP_simplified.csv"
+go_df <- read_csv(file_path)
+
+# --- Step 2: split geneID into a list column ---
+go_df <- go_df %>%
+  mutate(gene_list = strsplit(geneID, "/"))
+
+# --- Step 3: map HGNC symbols to Ensembl IDs ---
+mart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl", mirror = "useast")
+
+# Flatten all gene symbols to map at once
+all_genes <- unique(unlist(go_df$gene_list))
+
+symbol_map <- getBM(
+  attributes = c("hgnc_symbol", "ensembl_gene_id"),
+  filters = "hgnc_symbol",
+  values = all_genes,
+  mart = mart
+)
+
+# --- Step 4: add Ensembl IDs to each pathway ---
+go_df <- go_df %>%
+  mutate(
+    ensembl_list = map(gene_list, ~ symbol_map$ensembl_gene_id[match(.x, symbol_map$hgnc_symbol)])
+  )
+
+# --- Step 5: count genes per module ---
+# Make a vector of unique module names
+module_names <- unique(modules_df$Module)
+
+# Function to count how many genes fall into each module
+count_modules <- function(genes) {
+  sapply(module_names, function(mod) {
+    sum(genes %in% modules_df$ensembl_gene_id[modules_df$Module == mod], na.rm = TRUE)
+  })
 }
 
-# Create output directory if it doesn't exist
-out_dir <- "GO_sector_results"
-if (!dir.exists(out_dir)) {
-  dir.create(out_dir)
-}
+# Apply to each row
+module_counts <- map_dfr(go_df$ensembl_list, count_modules)
 
-# Export all results
-for (s in names(go_results)) {
-  ego <- go_results[[s]]
-  if (!is.null(ego)) {
-    out_file <- file.path(
-      out_dir,
-      paste0("GO_", gsub("[^[:alnum:]_]", "", s), "_all.csv")
-    )
-    write.csv(ego@result, file = out_file, row.names = FALSE, quote = TRUE)
-    message("Saved GO terms for sector ", s, " to ", out_file)
-  }
-}
+# Name the columns by module
+colnames(module_counts) <- module_names
 
-# Function to create and save lollipop plot
-plot_go_lollipop <- function(file, output_prefix = "Lollipop_plot_") {
-  
-  # Read CSV
-  go_data <- read.csv(file)
-  
-  # Ensure p.adjust exists
-  if (!"p.adjust" %in% colnames(go_data)) {
-    stop("The CSV file must have a 'p.adjust' column.")
-  }
-  
-  # Select top 10 hits by adjusted p-value
-  top_hits <- go_data %>%
-    filter(!is.na(p.adjust)) %>%
-    arrange(p.adjust) %>%
-    slice(1:10) %>%
-    mutate(
-      Description = factor(Description, levels = rev(Description))
-    )
-  
-  # Skip if no data
-  if (nrow(top_hits) == 0) {
-    message("No GO terms to plot for file: ", file)
-    return(NULL)
-  }
-  
-  # Lollipop plot
-  p <- ggplot(top_hits, aes(y = Description)) +
-    geom_segment(aes(x = 0, xend = -log10(p.adjust), yend = Description),
-                 color = "grey70") +
-    geom_point(aes(x = -log10(p.adjust), size = Count),
-               shape = 21, color = "black", stroke = 0.5, alpha = 1, fill = 'grey75') +
-    scale_size_continuous(range = c(3,7)) +
-    theme_classic(base_size = 14) +
-    labs(
-      x = "-log10 adjusted p-value",
-      y = "GO Term",
-      size = "Gene Count",
-      fill = "Significance",
-      title = paste("Top 10 GO BP Terms:", tools::file_path_sans_ext(basename(file)))
-    )
-  
-  # Save plot
-  out_file <- paste0(output_prefix, "_", tools::file_path_sans_ext(basename(file)), ".png")
-  ggsave(out_file, plot = p, width = 9.5, height = 3, dpi = 300)
-  message("Saved plot to ", out_file)
-}
+# --- Step 6: combine counts with original data ---
+go_df_final <- bind_cols(go_df, module_counts)
 
-# Make plots
-plot_go_lollipop("GO_sector_results/GO_OrganoidUp_all.csv")
-plot_go_lollipop("GO_sector_results/GO_OrganoidDown_all.csv")
-plot_go_lollipop("GO_sector_results/GO_AlzheimersUp_all.csv")
-plot_go_lollipop("GO_sector_results/GO_AlzheimersDown_all.csv")
-plot_go_lollipop("GO_sector_results/GO_ConcordantUp_all.csv")
-plot_go_lollipop("GO_sector_results/GO_ConcordantDown_all.csv")
-plot_go_lollipop("GO_sector_results/GO_OrganoidUpAlzheimersDown_all.csv")
-plot_go_lollipop("GO_sector_results/GO_OrganoidDownAlzheimersUp_all.csv")
 
-# Save dataframe with z-scores and sector designations
-write_csv(merged_df, "sector_genes_and_z_scores.csv")
+# Reshape to long format, avoiding name collision
+heatmap_df <- go_df_final %>%
+  dplyr::select(-gene_list, -ensembl_list) %>%  # remove list columns
+  pivot_longer(
+    cols = all_of(module_names),
+    names_to = "Module",
+    values_to = "Gene_Count"   # use a unique name
+  )
+
+# Optional: reorder pathways by total mapped genes
+pathway_order <- heatmap_df %>%
+  group_by(pathway = Description) %>%  # replace Description with your pathway column name
+  summarise(total_genes = sum(Gene_Count)) %>%
+  arrange(desc(total_genes)) %>%
+  pull(pathway)
+
+heatmap_df$Description <- factor(heatmap_df$Description, levels = pathway_order)
+
+# Heatmap plot
+ggplot(heatmap_df, aes(x = Module, y = Description, fill = Gene_Count)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(
+    x = "Module",
+    y = "Pathway",
+    fill = "Gene Count",
+    title = "Module representation in each GO pathway"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+
+# Option 1: remove list columns entirely
+write.csv(
+  go_df_final %>% dplyr::select(-gene_list, -ensembl_list),
+  "2026.03.24_module_makeup.csv",
+  row.names = FALSE
+)
+
+# Option 2: convert lists to strings so they can be saved
+go_df_export <- go_df_final %>%
+  mutate(
+    gene_list = map_chr(gene_list, ~ paste(.x, collapse = "/")),
+    ensembl_list = map_chr(ensembl_list, ~ paste(.x, collapse = "/"))
+  )
+
+write.csv(go_df_export, "2026.03.24_module_makeup.csv", row.names = FALSE)
+
+
+# Compute module-level averages
+module_averages <- final_merged %>%
+  group_by(Module) %>%
+  summarise(
+    avg_log2FoldChange = mean(log2FoldChange, na.rm = TRUE),
+    avg_logFC         = mean(logFC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Consensus_Cluster = cluster_lookup[Module]
+  )
+
+# Scatter plot with colors for consensus cluster
+ggplot(module_averages, aes(
+    x = avg_log2FoldChange,
+    y = avg_logFC,
+    label = Module,
+    color = Consensus_Cluster
+  )) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text_repel(
+    size = 3,
+    max.overlaps = 20,
+    box.padding = 0.3,
+    point.padding = 0.5
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  scale_color_manual(values = cluster_colors) +
+  labs(
+    x = "Average log2FoldChange (Organoid Model)",
+    y = "Average logFC (ROSMAP AD DLPFC)",
+    title = "Module-wise Average Expression Comparison",
+    color = "Consensus Cluster"
+  ) +
+  theme(
+    # White background, minimal grid
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    # Axis lines on bottom and left only
+    axis.line = element_line(color = "black"),
+    
+    # Text
+    text = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(face = "bold"),
+    
+    # Legend
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(face = "bold")
+  )
+
+
+# Compute module-level averages and IQRs
+module_stats <- final_merged %>%
+  group_by(Module) %>%
+  summarise(
+    avg_log2FoldChange = mean(log2FoldChange, na.rm = TRUE),
+    avg_logFC         = mean(logFC, na.rm = TRUE),
+    log2FC_Q1 = quantile(log2FoldChange, 0.25, na.rm = TRUE),
+    log2FC_Q3 = quantile(log2FoldChange, 0.75, na.rm = TRUE),
+    logFC_Q1  = quantile(logFC, 0.25, na.rm = TRUE),
+    logFC_Q3  = quantile(logFC, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Consensus_Cluster = cluster_lookup[Module]
+  )
+
+# Scatter plot
+fc_p <- ggplot(module_stats, aes(
+    x = avg_log2FoldChange,
+    y = avg_logFC,
+    label = Module,
+    color = Consensus_Cluster
+  )) +
+  # Error bars (vertical = logFC, horizontal = log2FoldChange)
+ # geom_errorbar(aes(ymin = logFC_Q1, ymax = logFC_Q3), width = 0, alpha = 0.6) +
+  #geom_errorbarh(aes(xmin = log2FC_Q1, xmax = log2FC_Q3), width = 0, alpha = 0.6) +
+  
+  # Points
+  geom_point(size = 2.5, alpha = 0.8) +
+  
+  # Labels
+  geom_text_repel(
+    size = 1.5,
+    max.overlaps = Inf,
+    box.padding = 0.3,
+  point.padding = 0.5
+  ) +
+  
+  # Reference lines
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey") +
+  geom_hline(yintercept = -0.5, linetype = "dashed", color = "grey") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  
+  # Color by cluster
+  scale_color_manual(values = cluster_colors) +
+  
+  # Labels & theme
+  labs(
+    x = "Average log2 Fold Change \n Organoid Model",
+    y = "Average log2 Fold Change \n AD DLPFC",
+    title = "Module-wise Average Expression with IQR",
+    color = "Consensus Cluster"
+  ) +
+  theme(
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black"),
+    text = element_text(size = 12),
+    #plot.title = element_text(hjust = 0.5, face = "bold"),
+    #axis.title = element_text(face = "bold"),
+    #legend.background = element_rect(fill = "white", color = NA),
+    #legend.key = element_rect(fill = "white", color = NA),
+    #legend.text = element_text(size = 10),
+    #legend.title = element_text(face = "bold")
+    legend.position = 'none'
+  ) +
+  xlim(-0.10, 0.10) +
+  ylim(-0.10, 0.10)
+
+ggsave("fold_change_plot_no_labels.png", plot = fc_p, width = 3, height = 3.5, dpi = 900)
 
 
 ### PLOT TRANSCRIPTS PER CELL TYPE USING HPA DATA ---
